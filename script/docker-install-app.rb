@@ -1,0 +1,113 @@
+#!/usr/bin/env ruby
+
+# Amahi Home Server
+# Copyright (C) 2007-2010 Amahi
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License v3
+# (29 June 2007), as published in the COPYING file.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# file COPYING for more details.
+#
+# You should have received a copy of the GNU General Public
+# License along with this program; if not, write to the Amahi
+# team at http://www.amahi.org/ under "Contact Us."
+
+#require File.dirname(__FILE__) + '/../config/boot'
+require 'rubygems'
+
+# Set up gems listed in the Gemfile.
+ENV['BUNDLE_GEMFILE'] ||= File.expand_path('../../Gemfile', __FILE__)
+require 'bundler/setup' if File.exists?(ENV['BUNDLE_GEMFILE'])
+
+#require 'commands/runner'
+require 'optparse'
+require 'thread'
+require 'etc'
+
+options = { :environment => (ENV['RAILS_ENV'] || "development").dup }
+options[:install] = true
+app_id = nil
+
+ARGV.clone.options do |opts|
+  script_name = File.basename($0)
+  opts.banner = "Usage: #{$0} [options] <app-identifier>"
+
+  opts.separator ""
+
+  opts.on("-e", "--environment=name", String,
+          "Specifies the environment to operate under (test/development/production).",
+          "Default: development") { |v| options[:environment] = v }
+
+  opts.on("-u", "--uninstall", "Uninstall the app provided") { |v| options[:install] = false }
+
+  opts.separator ""
+
+  opts.on("-h", "--help",
+          "Show this help message.") { $stderr.puts opts; exit }
+
+  opts.order! { |o| app_id ||= o } rescue retry
+end
+
+ARGV.delete(app_id)
+
+ENV["RAILS_ENV"] = options[:environment]
+
+if ENV['RAILS_ENV'] == "production"
+	# switch to apache:users first
+	uid = Etc.getpwnam("apache").uid
+	gid = Etc.getgrnam("users").gid
+	Process.gid = gid
+	Process.egid = gid
+	Process.uid = uid
+	Process.euid = uid
+end
+
+# make things group (users) writeable
+File.umask(0002)
+
+#raise $LOAD_PATH.inspect
+# load the environment only after RAILS_ENV is set up
+ROOTDIR = File.join(File.dirname(__FILE__), "..")
+$LOAD_PATH << ROOTDIR
+require File.join(ROOTDIR, 'config/environment')
+Rails.env.replace(options[:environment])
+
+# load default settings
+HDA_CONFIG = YAML.load_file("#{ROOTDIR}/config/hda.yml")[options[:environment]]
+
+def docker_install(app_id, app)
+  puts "=======  app install begin      @  #{Time.now} =========="
+  puts "Installing   app id #{app_id} under #{ROOTDIR} ENV=#{Rails.env}"
+  app.docker_install_bg
+  system("docker pull owncloud")
+  puts "Image pulled"
+  puts "=======  app install end        @  #{Time.now} =========="
+  puts("App started on port x")
+end
+
+
+def main(app_id, install)
+  if app_id.nil?
+    $stderr.puts "Run '#{$0} -h' for help."
+    exit 1
+  end
+  begin
+    app = install ? App.new(app_id) : App.where(:identifier=>app_id).first
+    raise "Error: cannot find #{app_id} to #{install ? "install" : "uninstall"}!" unless app
+    docker_install app_id, app
+  rescue => e
+    AmahiApi.api_key = Setting.value_by_name "api-key"
+    subject = "App #{install ? "install" : "uninstall"} error for #{app.name rescue app_id}"
+    trace = [e.inspect.to_s, e.backtrace].join ",\n"
+    er = AmahiApi::ErrorReport.new(:report => trace, :comments => e.inspect.to_s, :subject => subject)
+    #puts "DEBUG: backtrace: #{trace}"
+    er.save
+    raise e
+  end
+end
+
+main app_id, options[:install]

@@ -87,6 +87,18 @@ class App < ActiveRecord::Base
 		Process.detach(p)
 	end
 
+	def self.docker_install(identifier)
+		# run the kickoff script
+		cmd = File.join(Rails.root, "script/docker-install-app.rb --environment=#{Rails.env} #{identifier} >> #{INSTALLER_LOG} 2>&1 &")
+		if Rails.env == "production"
+			c = Command.new cmd
+			c.execute
+		else
+			# execute the command directly not in production
+			system(cmd)
+		end
+	end
+
 	def self.install(identifier)
 		# run the kickoff script
 		cmd = File.join(Rails.root, "script/install-app --environment=#{Rails.env} #{identifier} >> #{INSTALLER_LOG} 2>&1 &")
@@ -175,6 +187,50 @@ class App < ActiveRecord::Base
 
 	def has_dependents?
 		children != []
+	end
+
+	def docker_install_bg
+		initial_path = Dir.pwd
+		begin
+			# see the install_message method for the meaning of the messages
+			self.install_status = 0
+			AmahiApi::api_key = Setting.value_by_name("api-key")
+			self.install_status = 10
+			installer = AmahiApi::AppInstaller.find identifier
+			self.install_status = 20
+			self.install_app_deps installer if installer.app_dependencies
+			self.install_status = 30
+			self.install_pkg_deps installer if installer.pkg_dependencies
+			self.install_pkgs installer if installer.pkg
+			app_path = APP_PATH % identifier
+			mkdir app_path
+			webapp_path = nil
+			self.install_status = 40
+
+			# No need to download file
+			# Instead pull the image here
+
+			system("docker pull owncloud") # Dummy. Irrespective of the app clicked, this will pull owncloud only.
+			self.install_status = 90 # Once image pulled installation is almost over.
+
+			# All these fields can be used to generate configuration for container.
+
+			# self.initial_user = installer.initial_user
+			# self.initial_password = installer.initial_password
+			# self.special_instructions = installer.special_instructions
+			# self.version = installer.version || ""
+			# mark it as installed
+
+			system("docker run -d -p 9000:80 owncloud") # Dummy. Starts owncloud only.
+			self.installed = true
+			self.save!
+			self.install_status = 100
+			Dir.chdir(initial_path)
+		rescue Exception => e
+			self.install_status = 999
+			Dir.chdir(initial_path)
+			raise e
+		end
 	end
 
 	def install_bg

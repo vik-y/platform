@@ -32,10 +32,19 @@ class AppsController < ApplicationController
 		@apps = App.latest_first
 	end
 
+
 	def install
 		identifier = params[:id]
-		@app = App.where(:identifier=>identifier).first
-		App.install identifier unless @app
+		dockerize = params[:docker]
+		if dockerize
+			puts "Doing the installation the docker way."
+			@app = App.where(:identifier=>identifier).first
+			App.docker_install identifier unless @app
+		else
+			# Proceed with the normal installation
+			@app = App.where(:identifier=>identifier).first
+			App.install identifier unless @app
+		end
 	end
 
 	def install_progress
@@ -51,7 +60,7 @@ class AppsController < ApplicationController
 			@message = App.installation_message @progress
 		end
 		# we may send HTML if there app is installed or it errored out
-		before_filter_hook if @progress >= 100
+		before_action_hook if @progress >= 100
 	end
 
 	def uninstall
